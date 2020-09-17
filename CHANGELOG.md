@@ -4,6 +4,7 @@
 ### Added 
 
 - Termshark is now available for linux/arm64.
+- Vim keys h, j, k and l can now be used in widgets that accept left, down, up and right user input.
 - Termshark's tables support vim-style navigation - use G to go to the bottom, gg to go to the top, or
   add a numeric prefix.
 - Other vim-style navigation keypresses are now implemented :r/:e to load a pcap, :q! to quit, ZZ to quit,
@@ -20,6 +21,11 @@
 - Map keys to other key sequences using a vim-style map command e.g. `map <f1> ZZ`. Use vim-syntax to express
   keystrokes - alphanumeric characters, and angle brackets for compound keys (`<C-s>`, `<A-\>`, `<esc>`,
   `<space>`, `<enter>`)
+- Added support for themes. See this
+  [example](https://raw.githubusercontent.com/gcla/termshark/master/assets/themes/dracula.toml). Themes
+  are loaded from `~/.config/termshark/themes/` or from a small cache built-in
+  to termshark. A new minibuffer command `theme` can be used to change theme;
+  `no-theme` turns off theming.
 
 ### Changed
 

@@ -77,6 +77,7 @@ esc - Activate menu
 +/- - Adjust horizontal split
 </> - Adjust vertical split
 :   - Activate cmdline mode (see help cmdline)
+z   - Maximize/restore any modal dialog
 ?   - Display help
 
 In the filter, type a wireshark display filter expression.
@@ -155,6 +156,7 @@ represent themselves. Compound keys can be:
 <enter>
 <f1>-<f12>
 <C-s>, <A-/>
+<up>, <down>, <left>, <right>
 <pgup>, <pgdn>
 <home>, <end>
 

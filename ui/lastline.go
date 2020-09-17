@@ -7,6 +7,7 @@ package ui
 
 import (
 	"fmt"
+	"io/ioutil"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -15,10 +16,15 @@ import (
 	"github.com/gcla/gowid/gwutil"
 	"github.com/gcla/gowid/vim"
 	"github.com/gcla/termshark/v2"
+	"github.com/gcla/termshark/v2/theme"
 	"github.com/gcla/termshark/v2/widgets/mapkeys"
 	"github.com/gcla/termshark/v2/widgets/minibuffer"
 	"github.com/gdamore/tcell/terminfo"
 	"github.com/gdamore/tcell/terminfo/dynamic"
+	"github.com/rakyll/statik/fs"
+	"github.com/shibukawa/configdir"
+
+	_ "github.com/gcla/termshark/v2/assets/statik"
 )
 
 //======================================================================
@@ -29,6 +35,7 @@ var invalidReadCommandErr = fmt.Errorf("Invalid read command")
 var invalidRecentsCommandErr = fmt.Errorf("Invalid recents command")
 var invalidMapCommandErr = fmt.Errorf("Invalid map command")
 var invalidFilterCommandErr = fmt.Errorf("Invalid filter command")
+var invalidThemeCommandErr = fmt.Errorf("Invalid theme command")
 
 type minibufferFn func(gowid.IApp, ...string) error
 
@@ -60,36 +67,71 @@ func (m quietMinibufferFn) Arguments([]string) []minibuffer.IArg {
 
 //======================================================================
 
-type boolArg struct {
-	arg string
+type substrArg struct {
+	candidates []string
+	sub        string
 }
 
-var _ minibuffer.IArg = boolArg{}
+var _ minibuffer.IArg = substrArg{}
 
-func (s boolArg) OfferCompletion() bool {
+func (s substrArg) OfferCompletion() bool {
 	return true
 }
 
 // return these in sorted order
-func (s boolArg) Completions() []string {
-	return []string{"false", "true"}
+func (s substrArg) Completions() []string {
+	res := make([]string, 0)
+	for _, str := range s.candidates {
+		if strings.Contains(str, s.sub) {
+			res = append(res, str)
+		}
+	}
+	return res
 }
 
 //======================================================================
 
-type onOffArg struct {
-	arg string
+func newBoolArg(sub string) substrArg {
+	return substrArg{
+		sub:        sub,
+		candidates: []string{"false", "true"},
+	}
 }
 
-var _ minibuffer.IArg = onOffArg{}
-
-func (s onOffArg) OfferCompletion() bool {
-	return true
+func newOnOffArg(sub string) substrArg {
+	return substrArg{
+		sub:        sub,
+		candidates: []string{"off", "on"},
+	}
 }
 
-// return these in sorted order
-func (s onOffArg) Completions() []string {
-	return []string{"off", "on"}
+func newSetArg(sub string) substrArg {
+	return substrArg{
+		sub: sub,
+		candidates: []string{
+			"auto-scroll",
+			"copy-command-timeout",
+			"dark-mode",
+			"disable-shark-fin",
+			"packet-colors",
+			"pager",
+			"nopager",
+			"term",
+			"noterm",
+		},
+	}
+}
+
+func newHelpArg(sub string) substrArg {
+	return substrArg{
+		sub: sub,
+		candidates: []string{
+			"cmdline",
+			"map",
+			"set",
+			"vim",
+		},
+	}
 }
 
 //======================================================================
@@ -107,67 +149,6 @@ func (s unhelpfulArg) OfferCompletion() bool {
 // return these in sorted order
 func (s unhelpfulArg) Completions() []string {
 	return nil
-}
-
-//======================================================================
-
-type setArg struct {
-	substr string
-}
-
-var _ minibuffer.IArg = setArg{}
-
-func (s setArg) OfferCompletion() bool {
-	return true
-}
-
-// return these in sorted order
-func (s setArg) Completions() []string {
-	res := make([]string, 0)
-	for _, str := range []string{
-		"auto-scroll",
-		"copy-command-timeout",
-		"dark-mode",
-		"disable-shark-fin",
-		"packet-colors",
-		"pager",
-		"nopager",
-		"term",
-		"noterm",
-	} {
-		if strings.Contains(str, s.substr) {
-			res = append(res, str)
-		}
-	}
-	return res
-}
-
-//======================================================================
-
-type helpArg struct {
-	substr string
-}
-
-var _ minibuffer.IArg = helpArg{}
-
-func (s helpArg) OfferCompletion() bool {
-	return true
-}
-
-// return these in sorted order
-func (s helpArg) Completions() []string {
-	res := make([]string, 0)
-	for _, str := range []string{
-		"cmdline",
-		"map",
-		"set",
-		"vim",
-	} {
-		if strings.Contains(str, s.substr) {
-			res = append(res, str)
-		}
-	}
-	return res
 }
 
 //======================================================================
@@ -237,6 +218,58 @@ func (s filterArg) Completions() []string {
 			scopy := sc
 			if strings.Contains(scopy, s.substr) {
 				matches = append(matches, scopy)
+			}
+		}
+	}
+
+	return matches
+}
+
+//======================================================================
+
+type themeArg struct {
+	substr string
+}
+
+var _ minibuffer.IArg = themeArg{}
+
+func (s themeArg) OfferCompletion() bool {
+	return true
+}
+
+func (s themeArg) Completions() []string {
+	matches := make([]string, 0)
+
+	// First gather built-in themes
+	statikFS, err := fs.New()
+	if err == nil {
+		dir, err := statikFS.Open("/themes")
+		if err == nil {
+			info, err := dir.Readdir(-1)
+			if err == nil {
+				for _, finfo := range info {
+					m := strings.TrimSuffix(finfo.Name(), ".toml")
+					if strings.Contains(m, s.substr) {
+						matches = append(matches, m)
+					}
+				}
+			}
+		}
+	}
+
+	// Then from filesystem
+	stdConf := configdir.New("", "termshark")
+	conf := stdConf.QueryFolderContainsFile("themes")
+	if conf != nil {
+		files, err := ioutil.ReadDir(filepath.Join(conf.Path, "themes"))
+		if err == nil {
+			for _, file := range files {
+				m := strings.TrimSuffix(file.Name(), ".toml")
+				if !termshark.StringInSlice(m, matches) {
+					if strings.Contains(m, s.substr) {
+						matches = append(matches, m)
+					}
+				}
 			}
 		}
 	}
@@ -349,19 +382,24 @@ func (d setCommand) OfferCompletion() bool {
 
 func (d setCommand) Arguments(toks []string) []minibuffer.IArg {
 	res := make([]minibuffer.IArg, 0)
-	res = append(res, setArg{substr: toks[0]})
+	res = append(res, newSetArg(toks[0]))
 
 	if len(toks) > 0 {
 		onOffCmds := []string{"auto-scroll", "dark-mode", "packet-colors"}
 		boolCmds := []string{"disable-shark-fin"}
 		intCmds := []string{"disk-cache-size-mb", "copy-command-timeout"}
 
+		pref := ""
+		if len(toks) > 1 {
+			pref = toks[1]
+		}
+
 		if stringIn(toks[0], boolCmds) {
-			res = append(res, boolArg{})
+			res = append(res, newBoolArg(pref))
 		} else if stringIn(toks[0], intCmds) {
 			res = append(res, unhelpfulArg{})
 		} else if stringIn(toks[0], onOffCmds) {
-			res = append(res, onOffArg{})
+			res = append(res, newOnOffArg(pref))
 		}
 	}
 
@@ -481,6 +519,44 @@ func (d filterCommand) Arguments(toks []string) []minibuffer.IArg {
 
 //======================================================================
 
+type themeCommand struct{}
+
+var _ minibuffer.IAction = themeCommand{}
+
+func (d themeCommand) Run(app gowid.IApp, args ...string) error {
+	var err error
+
+	if len(args) != 2 {
+		err = invalidThemeCommandErr
+	} else {
+		termshark.SetConf("main.theme", args[1])
+		theme.Load(args[1])
+		SetupColors()
+	}
+
+	if err != nil {
+		OpenMessage(fmt.Sprintf("Error: %s", err), appView, app)
+	}
+
+	return err
+}
+
+func (d themeCommand) OfferCompletion() bool {
+	return true
+}
+
+func (d themeCommand) Arguments(toks []string) []minibuffer.IArg {
+	res := make([]minibuffer.IArg, 0)
+	pref := ""
+	if len(toks) > 0 {
+		pref = toks[0]
+	}
+	res = append(res, themeArg{substr: pref})
+	return res
+}
+
+//======================================================================
+
 type mapCommand struct {
 	w *mapkeys.Widget
 }
@@ -492,11 +568,15 @@ func (d mapCommand) Run(app gowid.IApp, args ...string) error {
 
 	if len(args) == 3 {
 		key1 := vim.VimStringToKeys(args[1])
-		keys2 := vim.VimStringToKeys(args[2])
-		termshark.AddKeyMapping(termshark.KeyMapping{From: key1[0], To: keys2})
-		mappings := termshark.LoadKeyMappings()
-		for _, mapping := range mappings {
-			d.w.AddMapping(mapping.From, mapping.To, app)
+		if len(key1) != 1 {
+			err = fmt.Errorf("Invalid: first map argument must be a single key (got '%s')", args[1])
+		} else {
+			keys2 := vim.VimStringToKeys(args[2])
+			termshark.AddKeyMapping(termshark.KeyMapping{From: key1[0], To: keys2})
+			mappings := termshark.LoadKeyMappings()
+			for _, mapping := range mappings {
+				d.w.AddMapping(mapping.From, mapping.To, app)
+			}
 		}
 	} else if len(args) == 1 {
 		OpenTemplatedDialogExt(appView, "Key Mappings", fixed, ratio(0.6), app)
@@ -598,7 +678,7 @@ func (d helpCommand) OfferCompletion() bool {
 func (d helpCommand) Arguments(toks []string) []minibuffer.IArg {
 	res := make([]minibuffer.IArg, 0)
 	if len(toks) == 1 {
-		res = append(res, helpArg{substr: toks[0]})
+		res = append(res, newHelpArg(toks[0]))
 	}
 	return res
 }
